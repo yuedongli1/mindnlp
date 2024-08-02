@@ -19,14 +19,15 @@ Generation mixin.
 import copy
 import inspect
 import warnings
-import logging
 from dataclasses import dataclass
+import time
 from typing import Optional, List, Callable, Dict, Any, Tuple, Union
 
 from addict import Dict as ADDict
 
 import mindspore
 from mindspore import ops
+from mindspore import nn
 
 from mindnlp.utils import ModelOutput, logging, ExplicitEnum, no_grad
 from .configuration_utils import GenerationConfig
@@ -79,6 +80,20 @@ logger = logging.get_logger(__name__)
 NEED_SETUP_CACHE_CLASSES_MAPPING = {
     "static": StaticCache,
 }
+
+
+class IterationManager:
+    def __init__(self, model: nn.Cell):
+        self.model = model
+
+    def __enter__(self):
+        if self.model.is_first_iteration:
+            self.model.add_flags_recursive(is_first_iteration=True)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.model.is_first_iteration:
+            self.model.add_flags_recursive(is_first_iteration=False)
+
 
 @dataclass
 class GenerateDecoderOnlyOutput(ModelOutput):
@@ -891,6 +906,7 @@ class GenerationMixin:
         model_kwargs["past_key_values"] = self._extract_past_from_model_output(
             outputs, standardize_cache_format=standardize_cache_format
         )
+        model_kwargs['past_key_values'] = mindspore.mutable(model_kwargs['past_key_values'])
 
         # update token_type_ids with last value
         if "token_type_ids" in model_kwargs:
@@ -900,10 +916,11 @@ class GenerationMixin:
         if not is_encoder_decoder:
             # update attention mask
             if "attention_mask" in model_kwargs:
-                attention_mask = model_kwargs["attention_mask"]
-                model_kwargs["attention_mask"] = ops.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], axis=-1
-                )
+                attention_mask = model_kwargs["attention_mask"]  # numpy
+                update_pos = attention_mask.sum(-1, keepdims=True)  # (bs, 1)
+                attention_mask = ops.scatter(attention_mask, index=update_pos, axis=1,
+                                             src=ops.ones(update_pos.shape, dtype=attention_mask.dtype))
+                model_kwargs["attention_mask"] = attention_mask
         else:
             # update decoder attention mask
             if "decoder_attention_mask" in model_kwargs:
@@ -2273,7 +2290,6 @@ class GenerationMixin:
         else:
             return input_ids
 
-
     def greedy_search(
         self,
         input_ids: mindspore.Tensor,
@@ -2293,16 +2309,11 @@ class GenerationMixin:
         r"""
         Generates sequences of token ids for models with a language modeling head using **greedy decoding** and can be
         used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
-
         <Tip warning={true}>
-
         In most cases, you do not need to call [`~generation.GenerationMixin.greedy_search`] directly. Use generate()
         instead. For an overview of generation strategies and code examples, check the [following
         guide](../generation_strategies).
-
         </Tip>
-
-
         Parameters:
             input_ids (`mindspore.Tensor` of shape `(batch_size, sequence_length)`):
                 The sequence used as a prompt for the generation.
@@ -2312,7 +2323,6 @@ class GenerationMixin:
             stopping_criteria (`StoppingCriteriaList`, *optional*):
                 An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
                 used to tell if the generation loop should stop.
-
             max_length (`int`, *optional*, defaults to 20):
                 **DEPRECATED**. Use `logits_processor` or `stopping_criteria` directly to cap the number of generated
                 tokens. The maximum length of the sequence to be generated.
@@ -2338,16 +2348,13 @@ class GenerationMixin:
             model_kwargs:
                 Additional model specific keyword arguments will be forwarded to the `forward` function of the model.
                 If model is an encoder-decoder model the kwargs should include `encoder_outputs`.
-
         Return:
             [`~generation.GreedySearchDecoderOnlyOutput`], [`~generation.GreedySearchEncoderDecoderOutput`] or
             `mindspore.Tensor`: A `mindspore.Tensor` containing the generated tokens (default behaviour) or a
             [`~generation.GreedySearchDecoderOnlyOutput`] if `model.config.is_encoder_decoder=False` and
             `return_dict_in_generate=True` or a [`~generation.GreedySearchEncoderDecoderOutput`] if
             `model.config.is_encoder_decoder=True`.
-
         Examples:
-
         ```python
         >>> from transformers import (
         ...     AutoTokenizer,
@@ -2357,16 +2364,12 @@ class GenerationMixin:
         ...     StoppingCriteriaList,
         ...     MaxLengthCriteria,
         ... )
-
         >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
         >>> model = AutoModelForCausalLM.from_pretrained("gpt2")
-
         >>> # set pad_token_id to eos_token_id because GPT2 does not have a PAD token
         >>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
-
         >>> input_prompt = "It might be possible to"
         >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids
-
         >>> # instantiate logits processors
         >>> logits_processor = LogitsProcessorList(
         ...     [
@@ -2374,11 +2377,9 @@ class GenerationMixin:
         ...     ]
         ... )
         >>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=20)])
-
         >>> outputs = model.greedy_search(
         ...     input_ids, logits_processor=logits_processor, stopping_criteria=stopping_criteria
         ... )
-
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ["It might be possible to get a better understanding of the nature of the problem, but it's not"]
         ```"""
@@ -2427,21 +2428,26 @@ class GenerationMixin:
         unfinished_sequences = ops.ones(input_ids.shape[0], dtype=mindspore.int64)
 
         this_peer_finished = False  # used by synced_gpus only
+        iteration_manager = IterationManager(self)
         while True:
+            t = time.time()
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             # forward pass to get next token
-            outputs = self(
-                **model_inputs,
-                return_dict=True,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-            )
+            with iteration_manager:
+                outputs = self(
+                    **model_inputs,
+                    return_dict=False,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                )
+                outputs = CausalLMOutputWithPast(logits=outputs[0],
+                                                 past_key_values=outputs[1])  # wrap as dict for compatibility
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
-
-            next_token_logits = outputs.logits[:, -1, :]
+            next_token_logits = outputs.logits[:, -1,
+                                :]  # currently only logits with shape (bs, 1, vocab_size) is returned
             # pre-process distribution
             next_tokens_scores = logits_processor(input_ids, next_token_logits)
 
@@ -2478,11 +2484,12 @@ class GenerationMixin:
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
-
+            print(f"{input_ids.shape}, {time.time() - t:.3f}s")
             # if eos_token was found in one sentence, set sentence to finished
             if eos_token_id_tensor is not None:
                 unfinished_sequences = unfinished_sequences.mul(
-                    next_tokens.tile((eos_token_id_tensor.shape[0], 1)).ne(eos_token_id_tensor.unsqueeze(1)).prod(axis=0)
+                    next_tokens.tile((eos_token_id_tensor.shape[0], 1)).ne(eos_token_id_tensor.unsqueeze(1)).prod(
+                        axis=0)
                 )
 
                 # stop when each sentence is finished

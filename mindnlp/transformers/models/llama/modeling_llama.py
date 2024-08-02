@@ -241,6 +241,8 @@ class LlamaAttention(nn.Cell):
                 f" and `num_heads`: {self.num_heads})."
             )
 
+        self.is_first_iteration = True
+
         self.q_proj = nn.Dense(self.hidden_size, self.num_heads * self.head_dim, has_bias=config.attention_bias)
         self.k_proj = nn.Dense(self.hidden_size, self.num_key_value_heads * self.head_dim, has_bias=config.attention_bias)
         self.v_proj = nn.Dense(self.hidden_size, self.num_key_value_heads * self.head_dim, has_bias=config.attention_bias)
@@ -318,14 +320,19 @@ class LlamaAttention(nn.Cell):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
+            kv_seq_len = past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
             # reuse k, v, self_attention
-            key_states = ops.cat([past_key_value[0], key_states], axis=2)
-            value_states = ops.cat([past_key_value[1], value_states], axis=2)
+            seq_range = ops.arange(0, kv_seq_len, dtype=mindspore.int32)
+            full_shape = past_key_value[0].shape
+            current_valid_pos = ops.equal(seq_range.reshape(1, 1, -1, 1), position_ids)
+            key_states = ops.where(current_valid_pos.broadcast_to(full_shape), key_states.broadcast_to(full_shape),
+                                   past_key_value[0])  # (bs, n_kv_head, seq, head_dim)
+            value_states = ops.where(current_valid_pos.broadcast_to(full_shape), value_states.broadcast_to(full_shape),
+                                     past_key_value[1])
 
         past_key_value = (key_states, value_states) if use_cache else None
 
@@ -373,6 +380,7 @@ class LlamaAttention(nn.Cell):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
+
 
 class LlamaDecoderLayer(nn.Cell):
     def __init__(self, config: LlamaConfig):
@@ -579,12 +587,8 @@ class LlamaModel(LlamaPreTrainedModel):
         next_cache = next_decoder_cache if use_cache else None
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
-        return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
-            past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
-        )
+
+        raise NotImplementedError
 
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
@@ -595,6 +599,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         self.model = LlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Dense(config.hidden_size, config.vocab_size, has_bias=False)
+
+        self.is_first_iteration = True
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -676,36 +682,38 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         )
 
         hidden_states = outputs[0]
+
+        # pick the last one
+        pre_gather = use_cache and past_key_values is None
+        if pre_gather:
+            last_valid_pos = attention_mask.sum(-1) - 1
+            hidden_states = ops.gather(hidden_states, last_valid_pos, 1)
+
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [ops.dense(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = ops.cat(logits, axis=-1)
         else:
             logits = self.lm_head(hidden_states)
-        logits = logits.float()
+        logits = logits.astype(mindspore.float32)
 
         loss = None
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :]
-            shift_labels = labels[..., 1:]
-            # Flatten the tokens
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            loss = ops.cross_entropy(shift_logits, shift_labels)
+        # TODO add loss code
+        # if labels is not None:
+        #     # Shift so that tokens < n predict n
+        #     shift_logits = logits[..., :-1, :]
+        #     shift_labels = labels[..., 1:]
+        #     # Flatten the tokens
+        #     shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        #     shift_labels = shift_labels.view(-1)
+        #     # Enable model parallelism
+        #     loss = ops.cross_entropy(shift_logits, shift_labels)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        raise NotImplementedError
 
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
@@ -725,10 +733,10 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         position_ids = kwargs.get("position_ids", None)
         if attention_mask is not None and position_ids is None:
             # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids = position_ids.masked_fill(attention_mask == 0, 1)
+            position_ids_cum = attention_mask.cumsum(-1) - 1
+            position_ids = position_ids_cum.masked_fill(attention_mask == 0, 1)
             if past_key_values:
-                position_ids = position_ids[:, -input_ids.shape[1] :]
+                position_ids = position_ids_cum[:, -input_ids.shape[1]:]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:

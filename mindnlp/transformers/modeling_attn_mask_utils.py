@@ -112,7 +112,8 @@ class AttentionMaskConverter:
         expanded_attn_mask = self._expand_mask(attention_mask_2d, dtype, tgt_len=input_shape[-1])
 
         if causal_4d_mask is not None:
-            expanded_attn_mask = causal_4d_mask.masked_fill(expanded_attn_mask.bool(), np.finfo(mindspore.dtype_to_nptype(dtype)).min)
+            expanded_attn_mask = causal_4d_mask.masked_fill(expanded_attn_mask.bool(),
+                                mindspore.Tensor(np.finfo(mindspore.dtype_to_nptype(dtype)).min, dtype=dtype))
 
         # expanded_attn_mask + causal_4d_mask can cause some overflow
         expanded_4d_mask = expanded_attn_mask
@@ -133,7 +134,7 @@ class AttentionMaskConverter:
         bsz, tgt_len = input_ids_shape
         mask = ops.full((tgt_len, tgt_len), mindspore.tensor(np.finfo(mindspore.dtype_to_nptype(dtype)).min))
         mask_cond = ops.arange(mask.shape[-1])
-        mask = mask.masked_fill(mask_cond < (mask_cond + 1).view(mask.shape[-1], 1), 0)
+        mask = mask.masked_fill(mask_cond < (mask_cond + 1).view(mask.shape[-1], 1), mindspore.Tensor(0, dtype=mask.dtype))
 
         mask = mask.to(dtype)
 
@@ -161,7 +162,8 @@ class AttentionMaskConverter:
 
         inverted_mask = 1.0 - expanded_mask
 
-        return inverted_mask.masked_fill(inverted_mask.to(mindspore.bool_), mindspore.tensor(np.finfo(mindspore.dtype_to_nptype(dtype)).min))
+        return inverted_mask.masked_fill(inverted_mask.to(mindspore.bool_),
+                            mindspore.tensor(np.finfo(mindspore.dtype_to_nptype(dtype)).min, dtype=dtype))
 
 
 def _prepare_4d_causal_attention_mask(
