@@ -684,7 +684,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         hidden_states = outputs[0]
 
         # pick the last one
-        pre_gather = use_cache and past_key_values is None
+        pre_gather = use_cache and past_key_values is None and self.training
         if pre_gather:
             last_valid_pos = attention_mask.sum(-1) - 1
             hidden_states = ops.gather(hidden_states, last_valid_pos, 1)
@@ -698,16 +698,15 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         logits = logits.astype(mindspore.float32)
 
         loss = None
-        # TODO add loss code
-        # if labels is not None:
-        #     # Shift so that tokens < n predict n
-        #     shift_logits = logits[..., :-1, :]
-        #     shift_labels = labels[..., 1:]
-        #     # Flatten the tokens
-        #     shift_logits = shift_logits.view(-1, self.config.vocab_size)
-        #     shift_labels = shift_labels.view(-1)
-        #     # Enable model parallelism
-        #     loss = ops.cross_entropy(shift_logits, shift_labels)
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :]
+            shift_labels = labels[..., 1:]
+            # Flatten the tokens
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            loss = ops.cross_entropy(shift_logits, shift_labels)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
