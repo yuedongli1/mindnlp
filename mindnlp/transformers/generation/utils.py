@@ -82,19 +82,6 @@ NEED_SETUP_CACHE_CLASSES_MAPPING = {
 }
 
 
-class IterationManager:
-    def __init__(self, model: nn.Cell):
-        self.model = model
-
-    def __enter__(self):
-        if self.model.is_first_iteration:
-            self.model.add_flags_recursive(is_first_iteration=True)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.model.is_first_iteration:
-            self.model.add_flags_recursive(is_first_iteration=False)
-
-
 @dataclass
 class GenerateDecoderOnlyOutput(ModelOutput):
     """
@@ -2428,21 +2415,19 @@ class GenerationMixin:
         unfinished_sequences = ops.ones(input_ids.shape[0], dtype=mindspore.int64)
 
         this_peer_finished = False  # used by synced_gpus only
-        iteration_manager = IterationManager(self)
         while True:
             t = time.time()
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
             # forward pass to get next token
-            with iteration_manager:
-                outputs = self(
-                    **model_inputs,
-                    return_dict=False,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                )
-                outputs = CausalLMOutputWithPast(logits=outputs[0],
-                                                 past_key_values=outputs[1])  # wrap as dict for compatibility
+            outputs = self(
+                **model_inputs,
+                return_dict=False,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+            )
+            outputs = CausalLMOutputWithPast(logits=outputs[0],
+                                             past_key_values=outputs[1])  # wrap as dict for compatibility
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
