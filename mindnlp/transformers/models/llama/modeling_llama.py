@@ -683,12 +683,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
 
         hidden_states = outputs[0]
 
-        # pick the last one
-        pre_gather = use_cache and past_key_values is None and self.training
-        if pre_gather:
-            last_valid_pos = attention_mask.sum(-1) - 1
-            hidden_states = ops.gather(hidden_states, last_valid_pos, 1)
-
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [ops.dense(hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]

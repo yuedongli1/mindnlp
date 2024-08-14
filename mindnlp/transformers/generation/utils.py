@@ -2278,29 +2278,34 @@ class GenerationMixin:
             return input_ids
 
     def greedy_search(
-        self,
-        input_ids: mindspore.Tensor,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
-        max_length: Optional[int] = None,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_scores: Optional[bool] = None,
-        return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
-        streamer: Optional["BaseStreamer"] = None,
-        **model_kwargs,
+            self: GenerationMixin,
+            input_ids: mindspore.Tensor,
+            logits_processor: Optional[LogitsProcessorList] = None,
+            stopping_criteria: Optional[StoppingCriteriaList] = None,
+            max_length: Optional[int] = None,
+            pad_token_id: Optional[int] = None,
+            eos_token_id: Optional[Union[int, List[int]]] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            output_scores: Optional[bool] = None,
+            return_dict_in_generate: Optional[bool] = None,
+            synced_gpus: bool = False,
+            streamer: Optional["BaseStreamer"] = None,
+            **model_kwargs,
     ) -> Union[GreedySearchOutput, mindspore.Tensor]:
         r"""
         Generates sequences of token ids for models with a language modeling head using **greedy decoding** and can be
         used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
+
         <Tip warning={true}>
+
         In most cases, you do not need to call [`~generation.GenerationMixin.greedy_search`] directly. Use generate()
         instead. For an overview of generation strategies and code examples, check the [following
         guide](../generation_strategies).
+
         </Tip>
+
+
         Parameters:
             input_ids (`mindspore.Tensor` of shape `(batch_size, sequence_length)`):
                 The sequence used as a prompt for the generation.
@@ -2310,6 +2315,7 @@ class GenerationMixin:
             stopping_criteria (`StoppingCriteriaList`, *optional*):
                 An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
                 used to tell if the generation loop should stop.
+
             max_length (`int`, *optional*, defaults to 20):
                 **DEPRECATED**. Use `logits_processor` or `stopping_criteria` directly to cap the number of generated
                 tokens. The maximum length of the sequence to be generated.
@@ -2335,13 +2341,16 @@ class GenerationMixin:
             model_kwargs:
                 Additional model specific keyword arguments will be forwarded to the `forward` function of the model.
                 If model is an encoder-decoder model the kwargs should include `encoder_outputs`.
+
         Return:
             [`~generation.GreedySearchDecoderOnlyOutput`], [`~generation.GreedySearchEncoderDecoderOutput`] or
             `mindspore.Tensor`: A `mindspore.Tensor` containing the generated tokens (default behaviour) or a
             [`~generation.GreedySearchDecoderOnlyOutput`] if `model.config.is_encoder_decoder=False` and
             `return_dict_in_generate=True` or a [`~generation.GreedySearchEncoderDecoderOutput`] if
             `model.config.is_encoder_decoder=True`.
+
         Examples:
+
         ```python
         >>> from transformers import (
         ...     AutoTokenizer,
@@ -2351,12 +2360,16 @@ class GenerationMixin:
         ...     StoppingCriteriaList,
         ...     MaxLengthCriteria,
         ... )
+
         >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
         >>> model = AutoModelForCausalLM.from_pretrained("gpt2")
+
         >>> # set pad_token_id to eos_token_id because GPT2 does not have a PAD token
         >>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
+
         >>> input_prompt = "It might be possible to"
         >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids
+
         >>> # instantiate logits processors
         >>> logits_processor = LogitsProcessorList(
         ...     [
@@ -2364,9 +2377,11 @@ class GenerationMixin:
         ...     ]
         ... )
         >>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=20)])
+
         >>> outputs = model.greedy_search(
         ...     input_ids, logits_processor=logits_processor, stopping_criteria=stopping_criteria
         ... )
+
         >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
         ["It might be possible to get a better understanding of the nature of the problem, but it's not"]
         ```"""
@@ -2416,21 +2431,35 @@ class GenerationMixin:
 
         this_peer_finished = False  # used by synced_gpus only
         while True:
-            t = time.time()
+            t_preprocess = time.time()
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            t_preprocess = time.time() - t_preprocess
             # forward pass to get next token
+            t_infer = time.time()
             outputs = self(
                 **model_inputs,
                 return_dict=False,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-            outputs = CausalLMOutputWithPast(logits=outputs[0],
+            t_infer = time.time() - t_infer
+            t_postprocess = time.time()
+
+            # pick the last valid one
+            gather_last_valid = model_inputs['past_key_values'] is None  # the first iter
+            if gather_last_valid:
+                last_valid_pos = model_inputs['attention_mask'].sum(-1) - 1
+                logits = ops.gather(outputs[0], last_valid_pos, 1)
+            else:
+                logits = outputs[0]
+
+            outputs = CausalLMOutputWithPast(logits=logits,
                                              past_key_values=outputs[1])  # wrap as dict for compatibility
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
+
             next_token_logits = outputs.logits[:, -1,
                                 :]  # currently only logits with shape (bs, 1, vocab_size) is returned
             # pre-process distribution
@@ -2469,7 +2498,6 @@ class GenerationMixin:
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
-            print(f"{input_ids.shape}, {time.time() - t:.3f}s")
             # if eos_token was found in one sentence, set sentence to finished
             if eos_token_id_tensor is not None:
                 unfinished_sequences = unfinished_sequences.mul(
@@ -2484,6 +2512,13 @@ class GenerationMixin:
             # stop if we exceed the maximum length
             if stopping_criteria(input_ids, scores):
                 this_peer_finished = True
+
+            t_postprocess = time.time() - t_postprocess
+            print(f"token id: {input_ids.shape[1]}, "
+                  f"preprocess: {t_preprocess:.3f}s, "
+                  f"infer: {t_infer:.3f}s, {t_postprocess:.3f}s, "
+                  f"postprocess: {t_postprocess:.3f}s, "
+                  f"total: {t_preprocess + t_infer + t_postprocess:.3f}s")
 
             if this_peer_finished and not synced_gpus:
                 break
