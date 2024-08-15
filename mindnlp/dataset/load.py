@@ -18,7 +18,6 @@ load
 """
 import os
 from typing import Union, Optional, Dict, Sequence, Mapping
-from mindspore.dataset import GeneratorDataset
 from datasets import load_dataset as hf_load
 from datasets import Dataset, IterableDataset, Split, Features, \
     DownloadConfig, DownloadMode, VerificationMode, Version
@@ -255,19 +254,4 @@ def load_dataset(
     else:
         ds_dict = ds_ret
 
-    datasets_dict = {}
-
-    for key, raw_ds in ds_dict.items():
-        column_names = list(raw_ds.features.keys())
-        source = TransferDataset(raw_ds, column_names) if isinstance(raw_ds, Dataset) \
-            else TransferIterableDataset(raw_ds, column_names)
-        ms_ds = GeneratorDataset(
-            source=source,
-            column_names=column_names,
-            shuffle=shuffle,
-            num_parallel_workers=num_proc if num_proc else 1)
-        datasets_dict[key] = ms_ds
-
-    if len(datasets_dict) == 1:
-        return datasets_dict.popitem()[1]
-    return datasets_dict
+    return ds_dict
