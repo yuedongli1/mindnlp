@@ -21,7 +21,6 @@ model = AutoModelForCausalLM.from_pretrained("path")
 tokenizer = AutoTokenizer.from_pretrained("path", add_prefix_space=True)
 
 dataset = load_dataset('tatsu-lab/alpaca')
-print(dataset.get_col_names())
 
 class ModifiedMapFunction(BaseMapFuction):
     def __call__(self, text):
@@ -36,7 +35,8 @@ training_args = TrainingArguments(
     learning_rate=2e-5,
     num_train_epochs=2,
     logging_steps=100,
-    save_strategy='epoch'
+    save_strategy='epoch',
+    use_parallel=True
 )
 
 trainer = ModifiedTrainer(
