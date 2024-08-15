@@ -27,6 +27,7 @@ import inspect
 import shutil
 import json
 import copy
+import datasets
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -144,6 +145,8 @@ class Trainer:
         self.rank_id = 0
         if args.use_parallel:
             init()
+            self.device_num = get_group_size()
+            self.rank_id = get_rank()
             mindspore.reset_auto_parallel_context()
 
             mindspore.set_auto_parallel_context(
@@ -569,7 +572,7 @@ class Trainer:
 
         for key, raw_ds in train_dataset.items():
             column_names = list(raw_ds.features.keys())
-            source = TransferDataset(raw_ds, column_names) if isinstance(raw_ds, Dataset) \
+            source = TransferDataset(raw_ds, column_names) if isinstance(raw_ds, datasets.Dataset) \
                 else TransferIterableDataset(raw_ds, column_names)
             ms_ds = GeneratorDataset(
                 source=source,
