@@ -1017,7 +1017,10 @@ class Trainer:
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
+                inputs = mindspore.mutable(inputs)
                 tr_loss_step, grads = self.training_step(model, inputs)
+                grads = mindspore.mutable(grads)
+                
                 if (
                     args.logging_nan_inf_filter
                     and (ops.isnan(tr_loss_step) or ops.isinf(tr_loss_step))

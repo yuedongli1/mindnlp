@@ -1154,11 +1154,6 @@ class TrainingArguments:
     def __str__(self):
         self_as_dict = asdict(self)
 
-        # Remove deprecated arguments. That code should be removed once
-        # those deprecated arguments are removed from TrainingArguments. (TODO: v5)
-        del self_as_dict["per_gpu_train_batch_size"]
-        del self_as_dict["per_gpu_eval_batch_size"]
-
         self_as_dict = {k: f"<{k.upper()}>" if k.endswith("_token") else v for k, v in self_as_dict.items()}
 
         attrs_as_str = [f"{k}={v},\n" for k, v in sorted(self_as_dict.items())]
