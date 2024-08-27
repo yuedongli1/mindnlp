@@ -953,6 +953,17 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
+        # jit grad clipper in graph mode to prevent recompile
+        @mindspore.jit
+        def clip_by_norm_jit_wrapper(grads, max_norm=1.0):
+             return ops.clip_by_norm(grads, max_norm)
+
+        # mutable sequence input in graph mode to prevent recompile
+        def maybe_mutable_wrapper(x):
+            if isinstance(x, (tuple, list, dict)):
+                return mindspore.mutable(x)
+            return x
+
         total_batched_samples = 0
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataset
@@ -1015,9 +1026,9 @@ class Trainer:
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                inputs = mindspore.mutable(inputs)
+                inputs = maybe_mutable_wrapper(inputs)
                 tr_loss_step, grads = self.training_step(model, inputs)
-                grads = mindspore.mutable(grads)
+                grads = maybe_mutable_wrapper(grads)
                 
                 if (
                     args.logging_nan_inf_filter
@@ -1042,7 +1053,7 @@ class Trainer:
                     # Gradient clipping
                     if args.max_grad_norm is not None and args.max_grad_norm > 0:
                         # deepspeed does its own clipping
-                        grads = ops.clip_by_global_norm(grads, args.max_grad_norm)
+                        grads = clip_by_norm_jit_wrapper(grads, args.max_grad_norm)
 
                     # Optimizer step
                     self.optimizer(grads)
