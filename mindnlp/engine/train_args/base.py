@@ -631,14 +631,6 @@ class TrainingArguments:
         metadata={"help": "When performing evaluation and predictions, only returns the loss."},
     )
 
-    use_parallel: bool = field(
-        default=False,
-        metadata={"help": "Whether distributed mode"}
-    )
-    dataset_num_workers: int = field(
-        default=8,
-        metadata={"help": "Number of subprocess to use for dataset"}
-    )
     per_device_train_batch_size: int = field(
         default=8, metadata={"help": "Batch size per GPU/TPU/MPS/NPU core/CPU for training."}
     )

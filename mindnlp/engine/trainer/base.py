@@ -35,13 +35,11 @@ import numpy as np
 
 import mindspore
 from mindspore import nn, ops
-from mindspore.dataset import Dataset, BatchDataset, PaddedBatchDataset, GeneratorDataset
+from mindspore.dataset import Dataset, BatchDataset, PaddedBatchDataset
 import mindspore.experimental
 import mindspore.experimental.optim
 from mindspore.nn.learning_rate_schedule import LearningRateSchedule
-from mindspore.communication import init, get_rank, get_group_size
 
-from ...dataset.load import TransferIterableDataset, TransferDataset
 from ...peft import PeftModel
 from ...configs import WEIGHTS_NAME, CONFIG_NAME, ADAPTER_WEIGHTS_NAME, ADAPTER_SAFE_WEIGHTS_NAME, \
     WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME, SAFE_WEIGHTS_INDEX_NAME
@@ -139,19 +137,6 @@ class Trainer:
             args = TrainingArguments(output_dir=output_dir)
 
         self.args = args
-
-        self.device_num = 1
-        self.rank_id = 0
-        if args.use_parallel:
-            init()
-            mindspore.reset_auto_parallel_context()
-
-            mindspore.set_auto_parallel_context(
-                parallel_mode=mindspore.ParallelMode.DATA_PARALLEL,
-                gradients_mean=True,
-                device_num=self.device_num
-            )
-
         # Seed must be set before instantiating the model when using model
         # mindspore do not support full determinisim on 2.2
         enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
@@ -565,22 +550,6 @@ class Trainer:
             raise ValueError("Trainer: training requires a train_dataset.")
 
         train_dataset = self.train_dataset
-        datasets_dict = {}
-
-        for key, raw_ds in train_dataset.items():
-            column_names = list(raw_ds.features.keys())
-            source = TransferDataset(raw_ds, column_names) if isinstance(raw_ds, Dataset) \
-                else TransferIterableDataset(raw_ds, column_names)
-            ms_ds = GeneratorDataset(
-                source=source,
-                column_names=column_names,
-                num_shards=self.device_num,
-                shard_id=self.rank_id,
-                shuffle=True,
-                num_parallel_workers=self.args.dataset_num_workers if self.args.dataset_num_workers else 1)
-            datasets_dict[key] = ms_ds
-
-        train_dataset = datasets_dict.popitem()[1]
         map_fn = self.data_map_fn
         if isinstance(train_dataset, (BatchDataset, PaddedBatchDataset)):
             if self.data_map_fn is not None:

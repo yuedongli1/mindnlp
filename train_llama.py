@@ -1,12 +1,10 @@
-from datasets import load_dataset
-
 import mindspore as ms
 ms.set_context(mode=0)
 from mindspore import ops
 
 from mindnlp.transformers import AutoModelForCausalLM, AutoTokenizer
 from mindnlp.engine import TrainingArguments, Trainer
-from mindnlp.dataset import BaseMapFuction
+from mindnlp.dataset import load_dataset, BaseMapFuction
 
 class ModifiedTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
