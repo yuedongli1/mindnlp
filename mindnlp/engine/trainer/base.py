@@ -965,6 +965,7 @@ class Trainer:
             return x
 
         total_batched_samples = 0
+        epoch_time = time.time()
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataset
             if hasattr(epoch_iterator, "set_epoch"):
@@ -994,6 +995,7 @@ class Trainer:
                 rng_to_sync = True
 
             step = -1
+            step_time = time.time()
             for step, inputs in enumerate(epoch_iterator.create_dict_iterator()):
                 total_batched_samples += 1
 
@@ -1061,7 +1063,12 @@ class Trainer:
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                    self._maybe_log_save_evaluate(tr_loss, grad_norm, model, epoch, ignore_keys_for_eval)
+
+                    extra_log = {"step": f"{f'{step+1}/{steps_in_epoch}':>9}",
+                                 "total_epoch": num_train_epochs,
+                                 "step_time": round(time.time() - step_time, 4)}
+                    step_time = time.time()
+                    self._maybe_log_save_evaluate(tr_loss, grad_norm, model, epoch, ignore_keys_for_eval, extra_log)
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
@@ -1076,7 +1083,10 @@ class Trainer:
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            self._maybe_log_save_evaluate(tr_loss, grad_norm, model, epoch, ignore_keys_for_eval)
+            extra_log = {"total_epoch": num_train_epochs,
+                         "epoch_time": round(time.time() - epoch_time, 4)}
+            epoch_time = time.time()
+            self._maybe_log_save_evaluate(tr_loss, grad_norm, model, epoch, ignore_keys_for_eval, extra_log=extra_log)
 
             if self.control.should_training_stop:
                 break
@@ -1347,10 +1357,11 @@ class Trainer:
                 f"There were unexpected keys in the checkpoint model loaded: {load_result[1]}."
             )
 
-    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, epoch, ignore_keys_for_eval):
+    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, epoch, ignore_keys_for_eval, extra_log=None):
         if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
             logs: Dict[str, float] = {}
-
+            if extra_log is not None:
+                logs.update(extra_log)
             # # all_gather + mean() to get average loss over all processes
             # tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
             tr_loss_scalar = tr_loss.item()
