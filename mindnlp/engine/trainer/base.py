@@ -466,7 +466,7 @@ class Trainer:
         #     optimizer_cls = AdamW
         #     optimizer_kwargs.update(adam_kwargs)
         if args.optim == OptimizerNames.ADAMW:
-            from mindspore.experimental.optim import AdamW
+            from mindspore.mint.optim import AdamW
 
             optimizer_cls = AdamW
             optimizer_kwargs.update(adam_kwargs)
