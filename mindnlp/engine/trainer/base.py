@@ -125,6 +125,7 @@ class Trainer:
         self,
         model: Union[PreTrainedModel, nn.Cell] = None,
         args: TrainingArguments = None,
+        data_collator=None,
         train_dataset: Optional[Dataset] = None,
         eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
@@ -191,7 +192,7 @@ class Trainer:
         self.is_model_parallel = False
 
         # TODO: support quantized model
-
+        self.data_collator = data_collator
         self.train_dataset = copy.deepcopy(train_dataset)
         self.eval_dataset = copy.deepcopy(eval_dataset)
         self.tokenizer = tokenizer
@@ -584,6 +585,7 @@ class Trainer:
             train_dataset = self._remove_unused_columns(train_dataset, description='training')
             train_dataset = TransferDataset(train_dataset)
 
+        data_collator = self.data_collator if self.data_collator is not None else self.default_data_collator
         train_dataset = GeneratorDataset(
             source=train_dataset,
             column_names=['sample'],
@@ -593,7 +595,7 @@ class Trainer:
             num_parallel_workers=self.args.dataset_num_workers if self.args.dataset_num_workers else 1)
 
         train_dataset = train_dataset.batch(self._train_batch_size, drop_remainder=self.args.dataset_drop_last,
-                                            num_parallel_workers=self.args.batch_num_workers, per_batch_map=self.default_data_collator,
+                                            num_parallel_workers=self.args.batch_num_workers, per_batch_map=data_collator,
                                             output_columns=self.args.column_name_collate)
 
         return train_dataset
