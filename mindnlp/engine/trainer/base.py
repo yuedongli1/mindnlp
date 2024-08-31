@@ -28,6 +28,7 @@ import shutil
 import json
 import copy
 import datasets
+from packaging import version
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -124,7 +125,6 @@ class Trainer:
         self,
         model: Union[PreTrainedModel, nn.Cell] = None,
         args: TrainingArguments = None,
-        map_fn: Optional[Union[Callable, BaseMapFuction]] = None,
         train_dataset: Optional[Dataset] = None,
         eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
@@ -191,12 +191,6 @@ class Trainer:
         self.is_model_parallel = False
 
         # TODO: support quantized model
-
-        self.data_map_fn = map_fn
-        if map_fn is not None and not (hasattr(map_fn, 'input_columns') and hasattr(map_fn, 'output_columns')) and \
-            not check_input_output_count(map_fn):
-            raise ValueError('`map_fn` must have same number of inputs and outputs when it is callable function'
-                             ' without attributes `input_columns` and `output_columns`')
 
         self.train_dataset = copy.deepcopy(train_dataset)
         self.eval_dataset = copy.deepcopy(eval_dataset)
@@ -362,13 +356,12 @@ class Trainer:
             # Labels may be named label or label_ids, the default data collator handles that.
             self._signature_columns += list(set(["label", "label_ids"] + self.label_names))
 
-    def _remove_unused_columns(self, dataset: "mindspore.dataset.Dataset", description: Optional[str] = None):
+    def _remove_unused_columns(self, dataset: "datasets.Dataset", description: Optional[str] = None):
         if not self.args.remove_unused_columns:
             return dataset
-        self._set_signature_columns_if_needed()
-        signature_columns = self._signature_columns
+        signature_columns = ['sample']
 
-        ignored_columns = list(set(dataset.get_col_names()) - set(signature_columns))
+        ignored_columns = list(set(dataset.column_names) - set(signature_columns))
         if len(ignored_columns) > 0:
             dset_description = "" if description is None else f"in the {description} set"
             logger.info(
@@ -378,9 +371,21 @@ class Trainer:
                 " you can safely ignore this message."
             )
 
-        columns = [k for k in dataset.get_col_names() if k not in ignored_columns]
+        columns = [k for k in signature_columns if k in dataset.column_names]
+        if len(columns) == 0:
+            raise ValueError(
+                "No columns in the dataset match the model's forward method signature. "
+                f"The following columns have been ignored: [{', '.join(ignored_columns)}]. "
+                "Please check the dataset and model. You may need to set `remove_unused_columns=False` in `TrainingArguments`."
+            )
 
-        return dataset.project(columns)
+        if version.parse(datasets.__version__) < version.parse("1.4.0"):
+            dataset.set_format(
+                type=dataset.format["type"], columns=columns, format_kwargs=dataset.format["format_kwargs"]
+            )
+            return dataset
+        else:
+            return dataset.remove_columns(ignored_columns)
 
     def create_optimizer_and_scheduler(self, num_training_steps: int):
         """
@@ -554,6 +559,12 @@ class Trainer:
 
         return model
 
+    def default_data_collator(self, batch_samples, batch_info):
+        batch = ()
+        for column_name in self.args.column_name_collate:
+            batch += (np.stack([sample[column_name] for sample in batch_samples]), )
+        return batch
+
     @lru_cache
     def get_train_dataset(self) -> Dataset:
         """
@@ -568,38 +579,23 @@ class Trainer:
             raise ValueError("Trainer: training requires a train_dataset.")
 
         train_dataset = self.train_dataset
-        datasets_dict = {}
 
-        for key, raw_ds in train_dataset.items():
-            column_names = list(raw_ds.features.keys())
-            source = TransferDataset(raw_ds, column_names) if isinstance(raw_ds, datasets.Dataset) \
-                else TransferIterableDataset(raw_ds, column_names)
-            ms_ds = GeneratorDataset(
-                source=source,
-                column_names=column_names,
-                num_shards=self.device_num,
-                shard_id=self.rank_id,
-                shuffle=True,
-                num_parallel_workers=self.args.dataset_num_workers if self.args.dataset_num_workers else 1)
-            datasets_dict[key] = ms_ds
+        if isinstance(train_dataset, datasets.Dataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description='training')
+            train_dataset = TransferDataset(train_dataset)
 
-        train_dataset = datasets_dict.popitem()[1]
-        map_fn = self.data_map_fn
-        if isinstance(train_dataset, (BatchDataset, PaddedBatchDataset)):
-            if self.data_map_fn is not None:
-                logger.warning("The trainer has been passed a `map_fn` and found `BatchDataset` at same time, "
-                               "the `map_fn` will be ignored.")
-            return train_dataset
+        train_dataset = GeneratorDataset(
+            source=train_dataset,
+            column_names=['sample'],
+            num_shards=self.device_num,
+            shard_id=self.rank_id,
+            shuffle=True,
+            num_parallel_workers=self.args.dataset_num_workers if self.args.dataset_num_workers else 1)
 
-        if map_fn is not None:
-            if mismatch_dataset_col_names(get_function_args(map_fn), train_dataset.get_col_names()):
-                raise ValueError(f'The arguments of `map_fn` must be subset of useful dataset columns, '
-                                f'but found {args_only_in_map_fn(get_function_args(map_fn), train_dataset.get_col_names())}')
-            train_dataset = train_dataset.map(map_fn, map_fn.input_columns, map_fn.output_columns)
+        train_dataset = train_dataset.batch(self._train_batch_size, drop_remainder=self.args.dataset_drop_last,
+                                            num_parallel_workers=self.args.batch_num_workers, per_batch_map=self.default_data_collator,
+                                            output_columns=self.args.column_name_collate)
 
-        train_dataset = self._remove_unused_columns(train_dataset, description="training")
-
-        train_dataset = train_dataset.batch(self._train_batch_size, self.args.dataset_drop_last, self.args.dataset_num_workers)
         return train_dataset
 
     @lru_cache

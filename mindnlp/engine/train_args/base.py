@@ -636,8 +636,12 @@ class TrainingArguments:
         metadata={"help": "Whether distributed mode"}
     )
     dataset_num_workers: int = field(
-        default=8,
-        metadata={"help": "Number of subprocess to use for dataset"}
+        default=1,
+        metadata={"help": "Number of subprocess to use for generatordataset"}
+    )
+    batch_num_workers: int = field(
+        default=1,
+        metadata={"help": "Number of subprocess to use for dataset.batch"}
     )
     per_device_train_batch_size: int = field(
         default=8, metadata={"help": "Batch size per GPU/TPU/MPS/NPU core/CPU for training."}
@@ -857,15 +861,6 @@ class TrainingArguments:
             )
         },
     )
-    dataset_num_workers: int = field(
-        default=1,
-        metadata={
-            "help": (
-                "Number of subprocesses to use for data loading (PyTorch only). 0 means that the data will be loaded"
-                " in the main process."
-            )
-        },
-    )
     dataset_prefetch_factor: int = field(
         default=None,
         metadata={
@@ -887,7 +882,9 @@ class TrainingArguments:
     disable_tqdm: Optional[bool] = field(
         default=None, metadata={"help": "Whether or not to disable the tqdm progress bars."}
     )
-
+    column_name_collate: Optional[List[str]] = field(
+        default=None, metadata={"help": "The list of keys of your dataloader"}
+    )
     remove_unused_columns: Optional[bool] = field(
         default=True, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
     )

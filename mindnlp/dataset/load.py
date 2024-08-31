@@ -33,14 +33,14 @@ class TransferIterableDataset():
         for data in self.ds:
             yield tuple(data[name] for name in self.column_names)
 
-class TransferDataset():
+
+class TransferDataset:
     """TransferDataset for Huggingface Dataset."""
-    def __init__(self, arrow_ds, column_names):
+    def __init__(self, arrow_ds):
         self.ds = arrow_ds
-        self.column_names = column_names
 
     def __getitem__(self, index):
-        return tuple(self.ds[int(index)][name] for name in self.column_names)
+        return self.ds[int(index)]['sample']
 
     def __len__(self):
         return self.ds.num_rows

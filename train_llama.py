@@ -12,7 +12,7 @@ class ModifiedTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         return model(
             input_ids=inputs["input_ids"],
-            attention_mask=ops.ones_like(inputs["input_ids"]).bool(),
+            attention_mask=inputs["attention_mask"].bool(),
             labels=inputs["input_ids"],
             return_dict=False
         )[0]
@@ -20,12 +20,12 @@ class ModifiedTrainer(Trainer):
 model = AutoModelForCausalLM.from_pretrained("path")
 tokenizer = AutoTokenizer.from_pretrained("path", add_prefix_space=True)
 
-dataset = load_dataset('tatsu-lab/alpaca')
+dataset = load_dataset('codyburker/yelp_review_sampled')
 
-class ModifiedMapFunction(BaseMapFuction):
-    def __call__(self, text):
-        tokenized = tokenizer(text, max_length=512, padding="max_length", truncation=True)
-        return tokenized['input_ids']
+tokenized_datasets = dataset.map(lambda  x: {'sample': tokenizer(
+                        x['text'], padding='max_length', truncation=True, max_length=512)}, batched=False)
+
+small_train_dataset = tokenized_datasets['train'].shuffle(seed=42).select(range(1000))
 
 training_args = TrainingArguments(
     "output",
@@ -36,14 +36,16 @@ training_args = TrainingArguments(
     num_train_epochs=2,
     logging_steps=100,
     save_strategy='epoch',
-    use_parallel=True
+    use_parallel=False,
+    dataset_drop_last=True,
+    remove_unused_columns=True,
+    column_name_collate=['attention_mask', 'input_ids']
 )
 
 trainer = ModifiedTrainer(
     model=model,
-    train_dataset=dataset,
+    train_dataset=small_train_dataset,
     args=training_args,
-    map_fn=ModifiedMapFunction('text', 'input_ids'),
 )
 
 trainer.train()
