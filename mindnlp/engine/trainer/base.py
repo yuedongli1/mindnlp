@@ -28,6 +28,7 @@ import shutil
 import json
 import copy
 import datasets
+from mindspore.amp import LossScaler
 from packaging import version
 from pathlib import Path
 from functools import lru_cache
@@ -43,6 +44,7 @@ import mindspore.experimental.optim
 from mindspore.nn.learning_rate_schedule import LearningRateSchedule
 from mindspore.communication import init, get_rank, get_group_size
 
+from .train_step import TrainStep
 from ...dataset.load import TransferIterableDataset, TransferDataset
 from ...peft import PeftModel
 from ...configs import WEIGHTS_NAME, CONFIG_NAME, ADAPTER_WEIGHTS_NAME, ADAPTER_SAFE_WEIGHTS_NAME, \
@@ -133,6 +135,7 @@ class Trainer:
         compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
         callbacks: Optional[List[TrainerCallback]] = None,
         optimizers: Tuple[nn.Optimizer, LearningRateSchedule] = (None, None),
+        loss_scaler: Optional[LossScaler] = None,
         preprocess_logits_for_metrics: Optional[Callable[[mindspore.Tensor, mindspore.Tensor], mindspore.Tensor]] = None,
     ):
         if args is None:
@@ -206,6 +209,7 @@ class Trainer:
         self.compute_metrics = compute_metrics
         self.preprocess_logits_for_metrics = preprocess_logits_for_metrics
         self.optimizer, self.lr_scheduler = optimizers
+        self.loss_scaler = loss_scaler
         if model_init is not None and (self.optimizer is not None or self.lr_scheduler is not None):
             raise RuntimeError(
                 "Passing a `model_init` is incompatible with providing the `optimizers` argument. "
@@ -953,10 +957,11 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
-        # jit grad clipper in graph mode to prevent recompile
-        @mindspore.jit
-        def clip_by_norm_jit_wrapper(grads, max_norm=1.0):
-             return ops.clip_by_norm(grads, max_norm)
+
+        self.train_step = TrainStep(model=self.model, optimizer=self.optimizer,
+                                    max_grad_norm=args.max_grad_norm,
+                                    gradient_accumulation_steps=args.gradient_accumulation_steps,
+                                    loss_scaler=self.loss_scaler)
 
         # mutable sequence input in graph mode to prevent recompile
         def maybe_mutable_wrapper(x):
@@ -1029,8 +1034,8 @@ class Trainer:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                 inputs = maybe_mutable_wrapper(inputs)
-                tr_loss_step, grads = self.training_step(model, inputs)
-                grads = maybe_mutable_wrapper(grads)
+                outputs = self.train_step(inputs)
+                tr_loss_step = outputs[0]
                 
                 if (
                     args.logging_nan_inf_filter
@@ -1043,30 +1048,16 @@ class Trainer:
 
                 self.current_flos += float(self.floating_point_ops(inputs))
 
-                is_last_step_and_steps_less_than_grad_acc = (
-                    steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
-                )
-                if (
-                    total_batched_samples % args.gradient_accumulation_steps == 0
-                    or
-                    # last step in epoch but step is always smaller than gradient_accumulation_steps
-                    is_last_step_and_steps_less_than_grad_acc
-                ):
-                    # Gradient clipping
-                    if args.max_grad_norm is not None and args.max_grad_norm > 0:
-                        # deepspeed does its own clipping
-                        grads = clip_by_norm_jit_wrapper(grads, args.max_grad_norm)
-
-                    # Optimizer step
-                    self.optimizer(grads)
-
+                sync_gradients = self.train_step.grad_accumulator.sync_gradients
+                if sync_gradients:
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
 
-                    extra_log = {"step": f"{f'{step+1}/{steps_in_epoch}':>9}",
+                    extra_log = {"step": f"{f'{step + 1}/{steps_in_epoch}':>9}",
                                  "total_epoch": num_train_epochs,
-                                 "step_time": round(time.time() - step_time, 4)}
+                                 "step_time": round(time.time() - step_time, 4),
+                                 "all_finite": self.train_step.grad_scaler.all_finite.value().item()}
                     step_time = time.time()
                     self._maybe_log_save_evaluate(tr_loss, grad_norm, model, epoch, ignore_keys_for_eval, extra_log)
                 else:
