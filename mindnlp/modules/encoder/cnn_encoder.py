@@ -60,9 +60,11 @@ class CNNEncoder(EncoderBase):
 
     """
 
-    def __init__(self, embedding, convs, conv_layer_activation=nn.Tanh(), output_dim=None):
+    def __init__(self, embedding, convs, conv_layer_activation=None, output_dim=None):
         super().__init__(embedding)
         self.emb_axis = self.embedding.embedding_size
+        if conv_layer_activation is None:
+            conv_layer_activation = nn.Tanh()
         self.act = conv_layer_activation
         self.output_axis = output_dim
         self.num_filter = convs[0].out_channels

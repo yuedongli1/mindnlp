@@ -84,6 +84,13 @@ class OptimizerNames(ExplicitEnum):
     SGD = "sgd"
 
 
+class DataParallelMode(Enum):
+    VANILLA = "vanilla"
+    ZERO1 = "zero1"
+    ZERO2 = "zero2"
+    ZERO3 = "zero3"
+
+
 # TODO: `TrainingArguments` users rely on it being fully mutable. In the future see if we can narrow this to a few keys: https://github.com/huggingface/transformers/pull/25903
 @dataclass
 class TrainingArguments:
@@ -631,9 +638,11 @@ class TrainingArguments:
         metadata={"help": "When performing evaluation and predictions, only returns the loss."},
     )
 
-    use_parallel: bool = field(
-        default=False,
-        metadata={"help": "Whether distributed mode"}
+    data_parallel_mode: Union[DataParallelMode, str] = field(
+        default=None,
+        metadata={
+            "help": "Data parallel mode",
+        }
     )
     dataset_num_workers: int = field(
         default=1,

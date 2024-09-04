@@ -87,7 +87,7 @@ from ..utils import (
     args_only_in_map_fn,
     check_input_output_count
 )
-from ..train_args import TrainingArguments, OptimizerNames
+from ..train_args import TrainingArguments, OptimizerNames, DataParallelMode
 from ..callbacks import (
     CallbackHandler,
     DefaultFlowCallback,
@@ -115,6 +115,28 @@ def _is_peft_model(model):
     classes_to_check = (PeftModel,)
     # Here we also check if the model is an instance of `PeftMixedModel` introduced in peft>=0.7.0: https://github.com/huggingface/transformers/pull/28321
     return isinstance(model, classes_to_check)
+
+
+def init_distributed(data_parallel_mode: str):
+    if data_parallel_mode is None:
+        return 0, 1
+
+    init()
+    device_num = get_group_size()
+    rank_id = get_rank()
+    mindspore.reset_auto_parallel_context()
+
+    valid_modes = {m.value for m in DataParallelMode}
+    if data_parallel_mode not in valid_modes:
+        raise NotImplementedError(f"expect data parallel mode in {valid_modes} "
+                                  f"but got {data_parallel_mode} instead")
+    mindspore.set_auto_parallel_context(
+        parallel_mode=mindspore.ParallelMode.DATA_PARALLEL,
+        gradients_mean=True,
+        device_num=device_num
+    )
+
+    return rank_id, device_num
 
 
 class Trainer:
@@ -147,17 +169,10 @@ class Trainer:
 
         self.device_num = 1
         self.rank_id = 0
-        if args.use_parallel:
-            init()
+        if args.data_parallel_mode is not None:
+            # be sure mindspore.communication.init() is called in advance
             self.device_num = get_group_size()
             self.rank_id = get_rank()
-            mindspore.reset_auto_parallel_context()
-
-            mindspore.set_auto_parallel_context(
-                parallel_mode=mindspore.ParallelMode.DATA_PARALLEL,
-                gradients_mean=True,
-                device_num=self.device_num
-            )
 
         # Seed must be set before instantiating the model when using model
         # mindspore do not support full determinisim on 2.2

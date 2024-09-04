@@ -44,9 +44,6 @@ OPENAI_GPT_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
-ACT_FNS = {"relu": nn.ReLU(), "silu": silu, "gelu": gelu_new, "swish": silu}
-
-
 class Attention(nn.Cell):
     def __init__(self, nx, n_positions, config, scale=False):
         super().__init__()
@@ -139,6 +136,7 @@ class Attention(nn.Cell):
 class MLP(nn.Cell):
     def __init__(self, n_state, config):  # in MLP: n_state=3072 (4 * n_embd)
         super().__init__()
+        ACT_FNS = {"relu": nn.ReLU(), "silu": silu, "gelu": gelu_new, "swish": silu}
         nx = config.n_embd
         self.c_fc = Conv1D(n_state, nx)
         self.c_proj = Conv1D(nx, n_state)
