@@ -3,8 +3,8 @@ ms.set_context(mode=0)
 
 from mindnlp.transformers import AutoModelForCausalLM, AutoTokenizer
 
-model = AutoModelForCausalLM.from_pretrained('path')
-tokenizer = AutoTokenizer.from_pretrained('path')
+model = AutoModelForCausalLM.from_pretrained('llama-7b')
+tokenizer = AutoTokenizer.from_pretrained('llama-7b')
 tokenizer.padding_side = 'right'
 
 prompt = 'Hey, who are you?'
