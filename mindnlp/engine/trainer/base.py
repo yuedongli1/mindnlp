@@ -1065,6 +1065,8 @@ class Trainer:
 
                 sync_gradients = self.train_step.grad_accumulator.sync_gradients
                 if sync_gradients:
+                    if self.train_step.grad_scaler.all_finite:
+                        self.lr_scheduler.step()
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
