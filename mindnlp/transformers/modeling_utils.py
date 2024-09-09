@@ -1019,17 +1019,14 @@ class PreTrainedModel(nn.Cell, CellUtilMixin, GenerationMixin, PeftAdapterMixin)
         if ms_dtype is None:
             ms_dtype = mindspore.float32
 
-        use_fp16 = False
         usage_dtype = mindspore.dtype_to_nptype(ms_dtype)
         if ms_dtype == mindspore.bfloat16:
-            ms_dtype = mindspore.float16
-            usage_dtype = np.float16
-            use_fp16 = True
+            usage_dtype = np.float32
 
         def empty_initializer(init, shape=None, dtype=mindspore.float32):
             if not isinstance(shape, (tuple, list)):
                 shape = (shape,)
-            if dtype in (mindspore.float16, mindspore.float32) \
+            if dtype in (mindspore.float16, mindspore.bfloat16, mindspore.float32) \
                 and ms_dtype is not None:
                 dtype = ms_dtype
             return Tensor_(shape=shape, dtype=dtype)
@@ -1059,9 +1056,15 @@ class PreTrainedModel(nn.Cell, CellUtilMixin, GenerationMixin, PeftAdapterMixin)
                 if use_safetensors or 'safetensors' in resolved_archive_file:
                     from safetensors.numpy import load_file
                     origin_state_dict = load_file(resolved_archive_file)
-                    if use_fp16:
-                        logger.warning_once("MindSpore do not support bfloat16 dtype, we will automaticlly convert to float16")
-                    state_dict = {k: Parameter(Tensor.from_numpy(v.astype(usage_dtype))) for k, v in origin_state_dict.items()}
+                    # if use_fp16:
+                    #     logger.warning_once("MindSpore do not support bfloat16 dtype, we will automaticlly convert to float16")
+                    if ms_dtype == mindspore.bfloat16:
+                        # Tensor.from_numpy doesn't support bfl6 ndarray.
+                        state_dict = {k: Parameter(Tensor.from_numpy(v.astype(usage_dtype)).astype(mindspore.bfloat16))
+                                      for k, v in origin_state_dict.items()}
+                    else:
+                        state_dict = {k: Parameter(Tensor.from_numpy(v.astype(usage_dtype)))
+                                      for k, v in origin_state_dict.items()}
                 else:
                     state_dict = load(resolved_archive_file)
             else:
