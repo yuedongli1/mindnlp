@@ -976,7 +976,8 @@ class Trainer:
         self.train_step = TrainStep(model=self.model, optimizer=self.optimizer,
                                     max_grad_norm=args.max_grad_norm,
                                     gradient_accumulation_steps=args.gradient_accumulation_steps,
-                                    loss_scaler=self.loss_scaler)
+                                    loss_scaler=self.loss_scaler,
+                                    gradient_accumulation_kwargs=dict(length_of_dataloader=len_dataset))
 
         # mutable sequence input in graph mode to prevent recompile
         def maybe_mutable_wrapper(x):
@@ -1000,6 +1001,10 @@ class Trainer:
                 if len_dataset is not None
                 else args.max_steps * args.gradient_accumulation_steps
             )
+
+            if steps_in_epoch != len_dataset:
+                raise NotImplementedError(f"currently only fixed dataset size is supported")
+
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
             if epoch == epochs_trained and resume_from_checkpoint is not None and steps_trained_in_current_epoch == 0:
