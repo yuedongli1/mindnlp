@@ -45,6 +45,8 @@ from mindspore.nn.learning_rate_schedule import LearningRateSchedule
 from mindspore.communication import init, get_rank, get_group_size
 
 from .train_step import TrainStep
+from .zero import prepare_network as maybe_wrap_network_with_zero
+from .zero import ZeroHelper, get_op_dp_group
 from ...dataset.load import TransferIterableDataset, TransferDataset
 from ...peft import PeftModel
 from ...configs import WEIGHTS_NAME, CONFIG_NAME, ADAPTER_WEIGHTS_NAME, ADAPTER_SAFE_WEIGHTS_NAME, \
@@ -972,12 +974,21 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
+        # zero helper init
+        if args.zero_stage == 0:
+            zero_helper = None
+        else:
+            logger.info(f'Zero optimizer parallel enabled, zero stage: {args.zero_stage}')
+            op_group, dp_group = get_op_dp_group()
+            self.model = maybe_wrap_network_with_zero(self.model, args.zero_stage, op_group, parallel_modules=None)
+            zero_helper = ZeroHelper(self.optimizer, args.zero_stage, op_group, dp_group)
 
         self.train_step = TrainStep(model=self.model, optimizer=self.optimizer,
                                     max_grad_norm=args.max_grad_norm,
                                     gradient_accumulation_steps=args.gradient_accumulation_steps,
                                     loss_scaler=self.loss_scaler,
-                                    gradient_accumulation_kwargs=dict(length_of_dataloader=len_dataset))
+                                    gradient_accumulation_kwargs=dict(length_of_dataloader=len_dataset),
+                                    zero_helper=zero_helper)
 
         # mutable sequence input in graph mode to prevent recompile
         def maybe_mutable_wrapper(x):

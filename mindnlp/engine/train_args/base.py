@@ -1207,6 +1207,18 @@ class TrainingArguments:
           `torch.nn.DistributedDataParallel`).
         - `ParallelMode.TPU`: several TPU cores.
         """
+    @property
+    def zero_stage(self):
+        """
+        Stage of zero optimizer parallel. Default to 0 means no zero.
+        """
+        if self.data_parallel_mode == DataParallelMode.ZERO1.value:
+            return 1
+        if self.data_parallel_mode == DataParallelMode.ZERO2.value:
+            return 2
+        if self.data_parallel_mode == DataParallelMode.ZERO3.value:
+            return 3
+        return 0
 
     @property
     def world_size(self):

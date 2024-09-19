@@ -1,5 +1,4 @@
 import copy
-import logging
 import os
 import random
 import time
@@ -8,6 +7,8 @@ from multiprocessing import Process, Queue
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 import numpy as np
+from mindspore.ops.operations.nn_ops import AllFinite
+from mindspore.parallel._utils import _get_parallel_mode
 from tqdm.auto import tqdm
 
 import mindspore as ms
@@ -15,8 +16,10 @@ from mindspore import context, nn, ops
 from mindspore.amp import DynamicLossScaler, StaticLossScaler, all_finite
 from mindspore.communication import get_group_size, get_local_rank, get_rank, init
 
+from .zero import ZeroHelper
+from ...utils import logging
 
-logger = logging.getLogger(__name__)
+logger = logging.get_logger(__name__)
 
 
 def set_seed(seed=42, rank=0):
@@ -492,6 +495,8 @@ class GradScaler:
         else:
             raise NotImplementedError(f"Unsupported loss scaler: {type(loss_scaler)}")
         self.all_finite = ms.Parameter(ms.Tensor(True), name="all_finite", requires_grad=False)
+        self.is_distributed = (_get_parallel_mode() != context.ParallelMode.STAND_ALONE)
+        self.allreduce = ops.AllReduce(op=ops.ReduceOp.SUM)
 
     def scale(self, inputs):
         return self.loss_scaler.scale(inputs)
@@ -504,7 +509,14 @@ class GradScaler:
         return True
 
     def _maybe_opt_step(self, optimizer: nn.Optimizer, grads):
-        ops.assign(self.all_finite, all_finite(grads))
+        overflow = AllFinite()(grads)
+        if self.is_distributed:
+            # make sure overflow is the same across all cards
+            overflow = ops.cast(overflow, ms.int8)
+            overflow = ops.cast(self.allreduce(overflow), ms.bool_)
+        self.all_finite = ops.logical_not(overflow)
+
+        # logger.info(f'allfinite: {self.all_finite.value()}, overflow: {overflow.value()}')
         if self.all_finite:
             optimizer(grads)
             return True
@@ -609,6 +621,7 @@ class TrainStep(nn.Cell, metaclass=ABCMeta):
         loss_scaler: Optional[Union[StaticLossScaler, DynamicLossScaler]] = None,
         max_grad_norm: Optional[float] = None,
         gradient_accumulation_steps: Optional[int] = None,
+        zero_helper: Optional[ZeroHelper] = None,
         **kwargs,
     ):
         super().__init__()
@@ -625,6 +638,23 @@ class TrainStep(nn.Cell, metaclass=ABCMeta):
         self.grad_accumulator = GradAccumulator(
             self.parameters, gradient_accumulation_steps, **gradient_accumulation_kwargs
         )
+
+        # zero init
+        if zero_helper is not None:
+            logger.info("start zero init")
+            self.zero_helper = zero_helper
+            self.zero_stage = zero_helper.zero_stage
+            self.run_optimizer = zero_helper.run_optimizer
+            if self.zero_stage != 0:
+                # grad reduce is done in zero_helper.cal_gradients instead.
+                self.grad_accumulator.grad_reducer = nn.Identity()
+                logger.info("start split params")
+                self.zero_helper.split_params()
+                logger.info("end split params")
+        else:
+            self.zero_stage = 0
+            self.zero_helper = None
+            self.run_optimizer = self.optimizer
 
         self.forward_and_backward = ops.value_and_grad(self.forward, None, weights=self.parameters, has_aux=True)
 
@@ -652,7 +682,16 @@ class TrainStep(nn.Cell, metaclass=ABCMeta):
         outputs, grads = self.forward_and_backward(inputs)
         grads = self.grad_accumulator.step(grads)
 
+        # Unscales the loss for outside logging. The first item of outputs is loss.
+        loss = self.unscale_loss(outputs[0])
+        outputs = (loss,) + outputs[1:]
+
+        # At gradient accumulation step
         if self.sync_gradients:
+            # Reduce and split gradients for zero1 and zero2
+            if self.zero_helper is not None:
+                grads = self.zero_helper.cal_gradients(grads)
+
             # Scaled loss creates scaled gradients. Unscales the gradients.
             grads = self.grad_scaler.unscale(grads)
 
@@ -661,7 +700,7 @@ class TrainStep(nn.Cell, metaclass=ABCMeta):
 
             # If these gradients do not contain infs or NaNs, optimizer.step() is then called,
             # otherwise, optimizer.step() is skipped.
-            self.grad_scaler.step(self.optimizer, grads)
+            self.grad_scaler.step(self.run_optimizer, grads)
 
             # Updates the scale for next iteration.
             self.grad_scaler.update()
@@ -669,7 +708,4 @@ class TrainStep(nn.Cell, metaclass=ABCMeta):
             # Clear the gradients of accumulator's assigned params.
             self.grad_accumulator.zero_grad()
 
-        # The first item of outputs is loss. Unscales the loss for outside logging.
-        loss = self.unscale_loss(outputs[0])
-        outputs = (loss,) + outputs[1:]
         return outputs
