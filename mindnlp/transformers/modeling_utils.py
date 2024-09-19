@@ -1372,11 +1372,12 @@ class PreTrainedModel(nn.Cell, CellUtilMixin, GenerationMixin, PeftAdapterMixin)
         return total
 
 
-    def trainable_params(self, recurse=True):
-        """
-        fix duplicated weights
-        """
-        return list(set(filter(lambda x: x.requires_grad, self.get_parameters(expand=recurse))))
+    # def trainable_params(self, recurse=True):
+    #     """
+    #     fixme: duplicated weights; set method may cause disorder of parameters
+    #
+    #     """
+    #     return list(set(filter(lambda x: x.requires_grad, self.get_parameters(expand=recurse))))
 
     def check_names_and_refresh_name(self):
         """
