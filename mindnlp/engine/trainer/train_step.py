@@ -509,7 +509,9 @@ class GradScaler:
         return True
 
     def _maybe_opt_step(self, optimizer: nn.Optimizer, grads):
-        overflow = AllFinite()(grads)
+        # overflow = AllFinite()(grads)
+        finite = all_finite(grads)
+        overflow = ops.logical_not(finite)
         if self.is_distributed:
             # make sure overflow is the same across all cards
             overflow = ops.cast(overflow, ms.int8)
