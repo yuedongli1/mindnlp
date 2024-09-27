@@ -1184,7 +1184,7 @@ class CustomDropout(nn.Cell):
         mask = ops.rand_like(x) > self.p
         return x * mask / (1 - self.p)
 
-nn.Dropout = CustomDropout
+#nn.Dropout = CustomDropout
 
 def dropout(input, p=0.5, training=True, seed=None):
     if training is False:
@@ -1192,7 +1192,7 @@ def dropout(input, p=0.5, training=True, seed=None):
     mask = ops.rand_like(input) > p
     return input * mask / (1 - p)
 
-ops.dropout = dropout
+#ops.dropout = dropout
 
 old_cell_call = nn.Cell.__call__
 def _cell_call(self, *args, **kwargs):
