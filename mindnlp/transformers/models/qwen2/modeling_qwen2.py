@@ -208,7 +208,7 @@ class Qwen2Attention(nn.Cell):
         self.max_position_embeddings = config.max_position_embeddings
         self.rope_theta = config.rope_theta
         self.is_causal = True
-        self.attention_dropout = config.attention_dropout
+        self.attention_dropout = nn.Dropout(p=config.attention_dropout)
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
@@ -283,7 +283,9 @@ class Qwen2Attention(nn.Cell):
 
         # upcast attention to fp32
         attn_weights = ops.softmax(attn_weights, axis=-1, dtype=mindspore.float32).to(query_states.dtype)
-        attn_weights = ops.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        # use nn.Dropout instead ops.dropout in pynative mode due to speed
+        # attn_weights = ops.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_weights = self.attention_dropout(attn_weights)
         attn_output = ops.matmul(attn_weights, value_states)
 
         if attn_output.shape != (bsz, self.num_heads, q_len, self.head_dim):
